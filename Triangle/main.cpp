@@ -10,6 +10,27 @@
 const int WIDTH = 1280;
 const int HEIGHT = 720;
 
+const std::vector<const char*> validationLayers = {"VK_LAYER_LUNARG_standard_validation"};
+
+#ifdef NDEBUG
+	const bool enableValidationLayers = false;
+#else
+	const bool enableValidationLayers = true;
+#endif //NDEBUG
+
+VkResult CreateDebugReportCallbackEXT(VkInstance instance, 
+									  const VkDebugReportCallbackCreateInfoEXT* pCreateInfo, 
+									  const VkAllocationCallbacks* pAllocator, 
+									  VkDebugReportCallbackEXT* pCallback)
+{
+	auto func = (PFN_vkCreateDebugReportCallbackEXT) vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT");
+    if (func != nullptr) {
+		return func(instance, pCreateInfo, pAllocator, pCallback);
+    } else {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+}
+
 class TriangleApp {
 public:
 	void run() {
@@ -22,6 +43,7 @@ private:
 
 	GLFWwindow* window;
 	VkInstance instance;
+	VkDebugReportCallbackEXT callback;
 
 	void initWindow() {
 		// init GLFW
@@ -38,9 +60,28 @@ private:
 
 	void initVulkan() {
 		createInstance();
+		setupDebugCallback();
+	}
+
+	void setupDebugCallback() {
+		if (!enableValidationLayers) return;
+
+		VkDebugReportCallbackCreateInfoEXT createInfo = {};
+		createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
+		createInfo.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT;
+		createInfo.pfnCallback = debugCallback;
+
+		if (CreateDebugReportCallbackEXT(instance, &createInfo, nullptr, &callback) != VK_SUCCESS) {
+			throw std::runtime_error("failed to setup debug callback");
+		}
 	}
 
 	void createInstance() {
+		
+		if (enableValidationLayers && !checkValidationLayerSupport()) {
+			throw std::runtime_error("validation layers requested, but not available!");
+		}
+		
 		VkApplicationInfo appInfo = {};
 		appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
 		appInfo.pApplicationName = "Hello Triangle";
@@ -53,20 +94,18 @@ private:
 		createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
 		createInfo.pApplicationInfo = &appInfo;
 
-		// GLFW EXTENSIONS
-
-		unsigned int glfwExtCount = 0;
-		const char** glfwExt;
-
-		glfwExt = glfwGetRequiredInstanceExtensions(&glfwExtCount);
-
-		std::cout << "Available GLFW extensions:" << std::endl;
-		for (int i = 0; i < glfwExtCount; i++) {
-			std::cout << "\t" << glfwExt[i] << std::endl;
+		if (enableValidationLayers) {
+			createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
+			createInfo.ppEnabledLayerNames = validationLayers.data();
+		} else {
+			createInfo.enabledLayerCount = 0;
 		}
 
-		createInfo.enabledExtensionCount = glfwExtCount;
-		createInfo.ppEnabledExtensionNames = glfwExt;
+		// GLFW EXTENSIONS
+
+		auto extensions = getRequiredExtensions();
+		createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+		createInfo.ppEnabledExtensionNames = extensions.data();
 		createInfo.enabledLayerCount = 0;
 
 		// we can finally use our created structures to create an instance
@@ -81,19 +120,50 @@ private:
 
 		std::vector<VkExtensionProperties> vkExtensions(vkExtensionCount);
 
-		vkEnumerateInstanceExtensionProperties(nullptr, &vkExtensionCount, vkExtensions.data());
+		vkEnumerateInstanceExtensionProperties(nullptr, &vkExtensionCount, vkExtensions.data());	
+	} //createInstance()
 
-		std::cout << "Available vulkan extensions: " << std::endl;
+	bool checkValidationLayerSupport() {
+		uint32_t layerCount;
+		vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
 
-		for (const auto& e : vkExtensions) {
-			std::cout << "\t" << e.extensionName << std::endl;
+		std::vector<VkLayerProperties> availableLayers(layerCount);
+		vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+
+		for (const char* layerName : validationLayers) {
+    		bool layerFound = false;
+
+			for (const auto& layerProperties : availableLayers) {
+				if (strcmp(layerName, layerProperties.layerName) == 0) {
+					layerFound = true;
+					break;
+				}
+			}
+
+			if (!layerFound) {
+				return false;
+			}
 		}
-	
-		// CHECKING IF EXTENSIONS REQUIREMENTS ARE MET
-		for (int r = 0; r < glfwExtCount; r++) {
-			if (std::none_of(std::begin(vkExtensions), std::end(vkExtensions), [glfwExt, r](auto v){return(!strcmp(glfwExt[r], v.extensionName));}))
-				throw std::runtime_error("Required extensions not found!");
+
+		return true;
+	}
+
+	std::vector<const char*> getRequiredExtensions() {
+		std::vector<const char*> extensions;
+
+		unsigned int glfwExtCount = 0;
+		const char** glfwExt;
+		glfwExt = glfwGetRequiredInstanceExtensions(&glfwExtCount);
+
+		for (unsigned int i = 0; i < glfwExtCount; i++) {
+			extensions.push_back(glfwExt[i]);
 		}
+
+		if (enableValidationLayers) {
+			extensions.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
+		}
+
+		return extensions;
 
 	}
 
@@ -103,19 +173,45 @@ private:
 		}
 	}
 
+	void DestroyDebugReportCallbackEXT(VkInstance instance,
+									   VkDebugReportCallbackEXT callback,
+									   const VkAllocationCallbacks* pAllocator)
+	{
+		auto func = (PFN_vkDestroyDebugReportCallbackEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
+		if (func != nullptr) {
+			func(instance, callback, pAllocator);
+		}
+	}
+
 	void cleanup() {
+		DestroyDebugReportCallbackEXT(instance, callback, nullptr);
 		vkDestroyInstance(instance, nullptr);
 
 		glfwDestroyWindow(window); // close the window and destory all of its data
 
 		glfwTerminate(); // stop the glfw process
 	}
+
+	static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
+		VkDebugReportFlagsEXT flags,
+		VkDebugReportObjectTypeEXT objType,
+		uint64_t obj,
+		size_t location,
+		int32_t code,
+		const char* layerPrefix,
+		const char* msg,
+		void* userData)
+	{
+		std::cerr << "validation layer: " << msg << std::endl;
+
+		return VK_FALSE;
+	}
 };
 
 int main() {
-	TriangleApp app;
 
 	try {
+		TriangleApp app;
 		app.run();
 	} catch (const std::runtime_error& e) {
 		std::cerr << e.what() << std::endl;
